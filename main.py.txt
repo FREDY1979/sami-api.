@@ -3,57 +3,147 @@
 from fastapi import FastAPI
 import pandas as pd
 from pydantic import BaseModel
+import numpy as np
 
-# --- Configuraci�n Inicial ---
-# Crea la aplicaci�n del servidor
+# --- 1. Configuración de la API para Auditoría y Consulta ---
+
 app = FastAPI(
-    title="API para SAMI 9.0",
-    description="Endpoint para el an�lisis cl�nico-funcional."
+    title="API de Auditoría y Consulta para CODEX JARVIS",
+    description="""
+    Endpoint robusto diseñado para la **extracción exhaustiva de datos**.
+    Recibe una consulta clínica, la procesa contra la Matriz de Datos Clínicos y,
+    utilizando una **vinculación de doble clave (ITEM ID + Código ADN)**, extrae
+    y consolida la totalidad de los datos de la Matriz de Medidas Funcionales.
+    Ideal para auditorías, consultas y flujos de trabajo en n8n.
+    """,
+    version="4.0 - Auditor"
 )
 
-# Carga la matriz de datos al iniciar. �Aseg�rate de que el archivo CSV est� en la misma carpeta!
-try:
-    df = pd.read_csv("CODEX JARVIS - MATRIZ DE DATOS CL�NICO - FUNCIONALES.xlsx - Hoja1.csv")
-    df.columns = df.columns.str.strip()
-    print("Matriz de datos cargada correctamente.")
-except FileNotFoundError:
-    print("ERROR: El archivo de la matriz no se encuentra.")
-    df = None
+# --- 2. Carga Segura y Consistente de las Bases de Datos ---
 
-# Define la estructura de la consulta que recibiremos de n8n
+# Se definen los tipos de datos para las columnas clave para garantizar una
+# coincidencia perfecta y evitar errores de tipo (ej. 123 vs "123").
+column_types = {
+    'ITEM ID  DE  LA MATRIZ': str,
+    'Código ADN Clínico-Funcional': str
+}
+
+try:
+    # Carga la matriz de datos clínicos, asegurando la consistencia de tipos.
+    df_clinico = pd.read_csv(
+        "CODEX JARVIS - MATRIZ DE DATOS CLÍNICO - FUNCIONALES.xlsx - Hoja1.csv",
+        dtype=column_types
+    )
+    df_clinico.columns = df_clinico.columns.str.strip()
+    print("✅ Base de Datos Clínica cargada y lista para auditoría.")
+
+    # Carga la matriz de medidas funcionales, asegurando la consistencia de tipos.
+    df_medidas = pd.read_csv(
+        "CODEX JARVIS - MATRIZ DE MEDIDAS FUNCIONALES.xlsx - Hoja1.csv",
+        dtype=column_types
+    )
+    df_medidas.columns = df_medidas.columns.str.strip()
+    print("✅ Base de Datos de Medidas Funcionales cargada y lista para auditoría.")
+
+except FileNotFoundError as e:
+    print(f"❌ ERROR CRÍTICO AL INICIAR: Archivo no encontrado: {e.filename}")
+    df_clinico = None
+    df_medidas = None
+except Exception as e:
+    print(f"❌ ERROR INESPERADO AL CARGAR ARCHIVOS: {e}")
+    df_clinico = None
+    df_medidas = None
+
+# Define la estructura de la consulta que la API recibirá
 class Consulta(BaseModel):
     texto_de_la_consulta: str
 
-# --- L�gica de SAMI ---
-def analizar_consulta(query: str):
-    """
-    Esta es la funci�n principal de SAMI. Busca en el DataFrame.
-    """
-    if df is None:
-        return {"error": "La matriz de datos no est� disponible."}
 
-    col_k = "CONDICI�N CL�NICA M�DICA"
-    # B�squeda (simplificada para este ejemplo)
-    result_df = df[df[col_k].str.contains(query, case=False, na=False)]
+# --- 3. Lógica de Inferencia y Extracción Exhaustiva ---
 
-    if len(result_df) == 1:
-        item_id = str(result_df.iloc[0]['ITEM ID  DE  LA MATRIZ']).strip()
-        adn_code = str(result_df.iloc[0]['C�digo ADN Cl�nico-Funcional']).strip()
+def auditar_consulta(query: str):
+    """
+    Motor principal de la API. Ejecuta el protocolo de auditoría:
+    1.  Busca en la matriz clínica (Columnas K y L) para encontrar el registro único.
+    2.  Extrae las dos llaves maestras: ITEM ID y Código ADN.
+    3.  Usa AMBAS llaves para una búsqueda de alta precisión en la matriz de medidas.
+    4.  Si la vinculación es exitosa, extrae y devuelve **TODOS los campos** de ambas filas.
+    """
+    if df_clinico is None or df_medidas is None:
+        return {"error": "Bases de datos no disponibles. Contacte al administrador."}
+
+    # Búsqueda inicial en las columnas primarias del núcleo clínico
+    col_k = "CONDICIÓN CLÍNICA MÉDICA"
+    col_l = "HALLAZGO ESPERADO"
+
+    mask = (df_clinico[col_k].str.contains(query, case=False, na=False)) | \
+           (df_clinico[col_l].str.contains(query, case=False, na=False))
+    
+    resultados_df = df_clinico[mask]
+
+    # --- Evaluación de Resultados ---
+    if len(resultados_df) == 0:
+        return {"error": f"Auditoría fallida. Cero registros encontrados para la consulta: '{query}'."}
+
+    if len(resultados_df) > 1:
+        return {"error": f"Ambigüedad detectada. La consulta arrojó {len(resultados_df)} resultados. Se requiere mayor especificidad para una auditoría precisa."}
+
+    # --- Éxito: Registro Único Localizado. Procediendo a la extracción completa ---
+    if len(resultados_df) == 1:
+        print(f"🎯 Registro único localizado para '{query}'. Iniciando extracción de datos completa...")
+        
+        # Convierte la fila clínica a un diccionario, manejando valores nulos.
+        resultado_clinico_series = resultados_df.iloc[0].replace({np.nan: None})
+        datos_clinicos_completos = resultado_clinico_series.to_dict()
+        
+        # Extrae las dos llaves maestras para la vinculación
+        item_id = datos_clinicos_completos.get('ITEM ID  DE  LA MATRIZ')
+        adn_code = datos_clinicos_completos.get('Código ADN Clínico-Funcional')
+        
+        if not item_id or not adn_code:
+            return {"error": "Fallo de integridad de datos. El registro clínico localizado carece de ITEM ID o Código ADN."}
+
+        print(f"🧬 Vinculando con Doble Llave Maestra -> ID: {item_id}, ADN: {adn_code}")
+
+        # --- Búsqueda de alta precisión en Matriz de Medidas con la doble llave ---
+        mask_medidas = (df_medidas['ITEM ID  DE  LA MATRIZ'] == item_id) & \
+                       (df_medidas['Código ADN Clínico-Funcional'] == adn_code)
+        
+        medidas_result_df = df_medidas[mask_medidas]
+        
+        if len(medidas_result_df) == 0:
+             return {
+                "advertencia": "Extracción parcial. Se encontró el registro clínico pero su par ID/ADN no existe en la Matriz de Medidas.",
+                "datos_clinicos_completos": datos_clinicos_completos,
+                "medidas_funcionales_completas": None
+            }
+
+        # Convierte la fila de medidas a un diccionario, manejando valores nulos.
+        resultado_medidas_series = medidas_result_df.iloc[0].replace({np.nan: None})
+        medidas_funcionales_completas = resultado_medidas_series.to_dict()
+        print("✅ ¡Extracción completa y vinculación exitosa!")
+
+        # --- Ensamblaje del Informe Final de Auditoría ---
         return {
-            "item_id_matriz": item_id,
-            "codigo_adn_clinico_funcional": adn_code
+            "estado_auditoria": "Exitosa",
+            "consulta_realizada": query,
+            "datos_clinicos_completos": datos_clinicos_completos,
+            "medidas_funcionales_completas": medidas_funcionales_completas
         }
-    else:
-        return {"error": "No se encontr� un resultado �nico."}
+    
+    return {"error": "Error desconocido durante el proceso de auditoría."}
 
-# --- El Endpoint ---
-# Esta es la URL que n8n llamar� (ej: http://tu-dominio.com/analizar)
-@app.post("/analizar")
-def procesar_consulta(consulta: Consulta):
+
+# --- 4. El Endpoint de la API: La Puerta de Entrada para n8n ---
+
+@app.post("/auditar")
+def procesar_auditoria(consulta: Consulta):
     """
-    Recibe la consulta desde n8n, la procesa con la l�gica de SAMI
-    y devuelve el resultado.
+    Recibe una consulta textual desde un cliente (n8n, etc.),
+    la procesa con el motor de auditoría de SAMI y devuelve
+    el conjunto de datos completo y consolidado.
     """
     query_texto = consulta.texto_de_la_consulta
-    resultado = analizar_consulta(query_texto)
-    return resultado
+    resultado_final = auditar_consulta(query_texto)
+    return resultado_final
+
