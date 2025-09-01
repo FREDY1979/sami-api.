@@ -1,0 +1,59 @@
+# main.py
+
+from fastapi import FastAPI
+import pandas as pd
+from pydantic import BaseModel
+
+# --- Configuración Inicial ---
+# Crea la aplicación del servidor
+app = FastAPI(
+    title="API para SAMI 9.0",
+    description="Endpoint para el análisis clínico-funcional."
+)
+
+# Carga la matriz de datos al iniciar. ¡Asegúrate de que el archivo CSV esté en la misma carpeta!
+try:
+    df = pd.read_csv("CODEX JARVIS - MATRIZ DE DATOS CLÍNICO - FUNCIONALES.xlsx - Hoja1.csv")
+    df.columns = df.columns.str.strip()
+    print("Matriz de datos cargada correctamente.")
+except FileNotFoundError:
+    print("ERROR: El archivo de la matriz no se encuentra.")
+    df = None
+
+# Define la estructura de la consulta que recibiremos de n8n
+class Consulta(BaseModel):
+    texto_de_la_consulta: str
+
+# --- Lógica de SAMI ---
+def analizar_consulta(query: str):
+    """
+    Esta es la función principal de SAMI. Busca en el DataFrame.
+    """
+    if df is None:
+        return {"error": "La matriz de datos no está disponible."}
+
+    col_k = "CONDICIÓN CLÍNICA MÉDICA"
+    # Búsqueda (simplificada para este ejemplo)
+    result_df = df[df[col_k].str.contains(query, case=False, na=False)]
+
+    if len(result_df) == 1:
+        item_id = str(result_df.iloc[0]['ITEM ID  DE  LA MATRIZ']).strip()
+        adn_code = str(result_df.iloc[0]['Código ADN Clínico-Funcional']).strip()
+        return {
+            "item_id_matriz": item_id,
+            "codigo_adn_clinico_funcional": adn_code
+        }
+    else:
+        return {"error": "No se encontró un resultado único."}
+
+# --- El Endpoint ---
+# Esta es la URL que n8n llamará (ej: http://tu-dominio.com/analizar)
+@app.post("/analizar")
+def procesar_consulta(consulta: Consulta):
+    """
+    Recibe la consulta desde n8n, la procesa con la lógica de SAMI
+    y devuelve el resultado.
+    """
+    query_texto = consulta.texto_de_la_consulta
+    resultado = analizar_consulta(query_texto)
+    return resultado
